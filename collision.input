@@ -1,0 +1,47 @@
+
+units metal
+atom_style molecular
+boundary s s s    #non-periodic
+
+# System definition
+read_data c60_240_collide.data
+
+# set groups
+#group free type 1 
+#group posx type 2
+#group negx type 3 
+
+# Import groups defined by SAMSON
+include samson_groups.in
+
+# Pair Coefficients
+pair_style	airebo 3.0 1 0
+pair_coeff * * CH.airebo C C C 
+
+
+# Equilibrate to 300K
+#fix nve all nve
+fix nve free nve
+
+timestep 0.00025
+# bring the temp of all the bearing atoms except the anchor atoms to 300
+fix free_fix free temp/berendsen 300. 300. 0.25
+
+#apply linear movement in +X
+#fix pox_fix posx move linear 4.0 0.0 0.0
+
+#apply linear movement in -X
+#fix neg_fix negx move linear -4.0 0.0 0.0
+
+#IMD connection. 
+fix comm all imd 5678 &
+    unwrap off &
+    fscale 100.0 &
+    trate 10 &
+#    nowait on
+
+
+dump mydmp1 all atom 1000 collision_4.lammpstrj
+thermo 10
+#run 100000
+

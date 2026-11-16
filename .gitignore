@@ -1,0 +1,24 @@
+# Python bytecode and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Runtime output
+*.log
+*.lammpstrj
+*.dump
+*.restart
+*.tmp
+
+# Local machine configuration / backups
+config.local.toml
+*.bak

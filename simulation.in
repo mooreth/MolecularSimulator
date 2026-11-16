@@ -1,0 +1,40 @@
+# ------------------------------------------------------------
+# Molecular machine simulation settings
+#
+# Python main.py has already issued:
+#   units metal
+#   atom_style <configured atom style>
+#   boundary s s s
+#   read_data <configured data file>
+#   include <configured SAMSON group file>
+#
+# The IMD fix is also configured by Python from config.toml.
+# ------------------------------------------------------------
+
+# ------------------------------------------------------------
+# Interatomic potential
+# ------------------------------------------------------------
+# TEST-SYSTEM SETUP: This AIREBO mapping is for the current
+# all-carbon test system. Select an appropriate force field and
+# provide one element mapping per LAMMPS atom type for other systems.
+pair_style airebo 3.0 1 0
+pair_coeff * * CH.airebo C C
+
+# ------------------------------------------------------------
+# Integration
+# ------------------------------------------------------------
+# Keep the physical MD timestep here, in the LAMMPS input file.
+timestep 0.00025
+
+# Integrate free atoms only. Motor and anchor jig atoms are excluded.
+fix integrate_free free nve
+fix free_thermostat free temp/berendsen 300.0 300.0 0.25
+
+# ------------------------------------------------------------
+# Diagnostics
+# ------------------------------------------------------------
+thermo_style custom step atoms temp ke pe etotal
+thermo 10
+thermo_modify flush yes
+
+# Python advances the simulation in configurable run chunks.

@@ -1,0 +1,12 @@
+Pass 2.4 automated checks
+- All project Python modules compile.
+- Existing linear motor configuration remains valid.
+- Rotational motor config validates motion, period, axis, and pivot.
+- Non-unit rotation axis is normalized.
+- group_centroid pivot is calculated from exported atom IDs and initial coordinates.
+- Explicit XYZ pivot is accepted.
+- Forward rotation emits LAMMPS fix move rotate with units box.
+- Reverse rotation unfixes the prior fix and emits the opposite axis.
+- Stop removes only the selected motor's fix.
+- Controller behavior was tested with a mocked LAMMPS interface.
+- Live SAMSON/LAMMPS integration was not available in this environment.

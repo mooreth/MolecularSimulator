@@ -1,0 +1,4 @@
+# Python dependencies for the command-line controller (main.py).
+# Install into the Python environment that can import the LAMMPS Python module.
+numpy>=1.24
+imdclient>=0.2.4
