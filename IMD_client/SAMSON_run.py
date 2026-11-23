@@ -1,35 +1,32 @@
 
-import os
-import sys
 import json
 import socket
 import threading
 import queue
+from pathlib import Path
+import sys
 
 from PySide6.QtCore import QTimer
 
 
 # --------------------------------------------------
-# Configuration
+# Shared application configuration
 # --------------------------------------------------
 
-PROJECT_DIR = r"C:\LAMMPS\IMD"
-DATA_FILE = os.path.join(PROJECT_DIR, "c60_240_collide.data")
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
-SERVER_HOST = "127.0.0.1"
-SERVER_PORT = 5679
-
-DISPLAY_INTERVAL_MS = 16
-
-
-# --------------------------------------------------
-# Shared LAMMPS data parser
-# --------------------------------------------------
-
-if PROJECT_DIR not in sys.path:
-    sys.path.insert(0, PROJECT_DIR)
-
+from configuration import load_config
 from lammps_data import load_lammps_data
+import samson_session
+
+CONFIG = load_config(SCRIPT_DIR / "config.toml")
+DATA_FILE = CONFIG["resolved_files"]["data_file"]
+SERVER_HOST = CONFIG["network"]["host"]
+SERVER_PORT = CONFIG["network"]["samson_port"]
+DISPLAY_INTERVAL_MS = CONFIG["samson"]["display_interval_ms"]
+ELEMENT_OVERRIDES = CONFIG["elements"]["overrides"]
 
 
 # --------------------------------------------------
@@ -72,16 +69,38 @@ def create_molecular_system(data_file=DATA_FILE):
     global atom_table
     global expected_atom_count
 
+    # Reuse the existing model if this script is evaluated again in the
+    # same SAMSON Python session. Never create a second visual copy.
+    if samson_session.has_molecular_system():
+        structural_model = samson_session.structural_model
+        samson_atoms = samson_session.samson_atoms
+        atom_table = samson_session.atom_table
+        expected_atom_count = samson_session.expected_atom_count
+        print(
+            "Reusing the existing SAMSON molecular system:",
+            expected_atom_count,
+            "atoms"
+        )
+        return
+
     print("Loading LAMMPS data file:", data_file)
 
     atom_table = load_lammps_data(
-    data_file,
-    element_map={
-        1: "C",
-        2: "C",
-        3: "C"
-    }
-)
+        data_file,
+        atom_style=CONFIG["lammps"]["atom_style"],
+        element_map=ELEMENT_OVERRIDES,
+    )
+
+    unknown_types = sorted({
+        atom["atom_type"] for atom in atom_table
+        if atom["element"] == "Unknown"
+    })
+    if unknown_types:
+        raise ValueError(
+            "Could not identify elements for LAMMPS atom types "
+            f"{unknown_types}. Add explicit mappings to "
+            "[elements.overrides] in config.toml."
+        )
 
     expected_atom_count = len(atom_table)
 
@@ -131,7 +150,16 @@ def create_molecular_system(data_file=DATA_FILE):
             structural_model
         )
 
-    print("SAMSON molecular system created.")
+    # Make the exact model and atom objects available to the group exporter.
+    # The exporter will reuse these references rather than searching the
+    # entire document or importing the molecular structure again.
+    samson_session.register_molecular_system(
+        structural_model,
+        samson_atoms,
+        atom_table
+    )
+
+    print("SAMSON molecular system created and registered for group setup.")
 
     SAMSON.getActiveCamera().center()
 
@@ -310,6 +338,7 @@ def tcp_receiver():
             server_socket.close()
             server_socket = None
 
+        samson_session.server_running = False
         print("SAMSON TCP server stopped.")
 
 
@@ -341,12 +370,14 @@ def start_server():
     global server_thread
     global frame_timer
 
-    if server_thread is not None and server_thread.is_alive():
-
+    if samson_session.server_running or (
+        server_thread is not None and server_thread.is_alive()
+    ):
         print("SAMSON server is already running.")
         return
 
     server_stop_event.clear()
+    samson_session.server_running = True
 
     # Create GUI timer.
     frame_timer = QTimer()
@@ -398,6 +429,7 @@ def stop_server():
             except OSError:
                 pass
 
+    samson_session.server_running = False
     print("SAMSON server shutdown requested.")
 
 

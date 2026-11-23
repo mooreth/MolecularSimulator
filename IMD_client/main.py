@@ -1,43 +1,20 @@
+"""LAMMPS-to-SAMSON molecular simulation controller."""
 
-import time
-import threading
 import queue
+import threading
+import time
 from dataclasses import dataclass
 
 import numpy as np
-
-from lammps import lammps
 from imdclient import IMDClient
+from lammps import lammps
 
+from configuration import load_config, lammps_quote
+from keyboard_controller import KeyboardController
 from lammps_data import load_lammps_data
 from molecular_system import MolecularSystem
 from SAMSON_imd import SamsonIMDClient
-from keyboard_controller import KeyboardController
 
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-DATA_FILE = "C:/LAMMPS/IMD/c60_240_collide.data"
-GROUP_FILE = "C:/LAMMPS/IMD/samson_groups.in"
-SIMULATION_FILE = "C:/LAMMPS/IMD/simulation.in"
-
-HOST = "127.0.0.1"
-IMD_PORT = 5678
-SAMSON_PORT = 5679
-
-CHUNK_STEPS = 10
-
-ELEMENT_MAP = {
-    1: "C",
-    2: "C"
-}
-
-
-# ============================================================
-# FRAME DATA STRUCTURE
-# ============================================================
 
 @dataclass
 class IMDFrame:
@@ -47,30 +24,27 @@ class IMDFrame:
     positions: np.ndarray
 
 
-# ============================================================
-# IMD RECEIVER THREAD
-# ============================================================
-
-def connect_and_receive_frames(frame_queue, stop_event, connected_event, n_atoms):
+def connect_and_receive_frames(
+    frame_queue, stop_event, connected_event, n_atoms, host, imd_port
+):
+    """Connect to LAMMPS IMD and place received frames on a queue."""
     print("IMD: Receiver thread started.", flush=True)
     print("IMD: Waiting for LAMMPS handshake...", flush=True)
-
     client = None
 
     try:
+        # The IMDClient must not install signal handlers from this worker thread.
         client = IMDClient(
-            HOST,
-            IMD_PORT,
+            host,
+            imd_port,
             n_atoms=n_atoms,
-            multithreaded=False
+            multithreaded=False,
         )
-
         print("IMD: Handshake successful!", flush=True)
         connected_event.set()
 
         while not stop_event.is_set():
             raw_frame = client.get_imdframe()
-
             if raw_frame is not None:
                 frame_queue.put(raw_frame)
 
@@ -84,304 +58,360 @@ def connect_and_receive_frames(frame_queue, stop_event, connected_event, n_atoms
                 client.stop()
             except Exception:
                 pass
-
         print("IMD receiver thread stopped.", flush=True)
 
 
-# ============================================================
-# MOTOR CONTROL
-# ============================================================
 
-def process_motor_command(lmp, command, motor_direction):
-    """
-    Control motor1 using LAMMPS fix move.
+def validate_configured_motor_groups(config):
+    """Fail early if a configured motor has no exported LAMMPS group."""
+    group_file = config["resolved_files"]["group_file"]
+    exported_groups = set()
+    with group_file.open("r", encoding="utf-8") as stream:
+        for raw_line in stream:
+            line = raw_line.split("#", 1)[0].strip()
+            fields = line.split()
+            if len(fields) >= 2 and fields[0] == "group":
+                exported_groups.add(fields[1])
 
-    J = Forward (+X)
-    K = Stop
-    L = Reverse (-X)
-    """
+    missing = [
+        motor["group"] for motor in config["motors"].values()
+        if motor["group"] not in exported_groups
+    ]
+    if missing:
+        names = ", ".join(missing)
+        raise ValueError(
+            f"Configured motor group(s) not found in {group_file}: {names}. "
+            "Create matching structural groups in SAMSON, then rerun "
+            "SAMSON_groups_setup.py before starting main.py."
+        )
 
-    if command == "forward":
+def _read_group_atom_ids(group_file, group_name):
+    """Read the explicit atom-ID membership written by SAMSON_groups_setup."""
+    with group_file.open("r", encoding="utf-8") as stream:
+        for raw_line in stream:
+            fields = raw_line.split("#", 1)[0].split()
+            if len(fields) >= 4 and fields[0] == "group" and fields[1] == group_name:
+                if fields[2] != "id":
+                    raise ValueError(
+                        f"Group {group_name!r} is not an explicit atom-ID group in {group_file}"
+                    )
+                try:
+                    atom_ids = [int(value) for value in fields[3:]]
+                except ValueError as error:
+                    raise ValueError(
+                        f"Could not parse atom IDs for group {group_name!r} in {group_file}"
+                    ) from error
+                if not atom_ids:
+                    raise ValueError(f"Rotation group {group_name!r} contains no atoms")
+                return atom_ids
+    raise ValueError(
+        f"Could not find explicit atom-ID definition for group {group_name!r} in {group_file}"
+    )
 
-        if motor_direction != "forward":
 
-            if motor_direction is not None:
-                lmp.command("unfix motor1_move")
+def resolve_rotation_pivots(motors, atom_table, group_file):
+    """Resolve each rotation pivot to an XYZ point in the initial LAMMPS model."""
+    positions_by_id = {
+        int(atom["lammps_id"]): atom["initial_position"]
+        for atom in atom_table
+    }
 
-            lmp.command(
-                "fix motor1_move motor1 move linear 10.0 0.0 0.0"
+    for motor_name, motor in motors.items():
+        if motor["motion"] != "rotate":
+            continue
+
+        if motor["pivot"] == "group_centroid":
+            atom_ids = _read_group_atom_ids(group_file, motor["group"])
+            missing = [atom_id for atom_id in atom_ids if atom_id not in positions_by_id]
+            if missing:
+                raise ValueError(
+                    f"Rotation group {motor['group']!r} contains atom IDs not present "
+                    f"in the data file: {missing[:10]}"
+                )
+            xyz = [positions_by_id[atom_id] for atom_id in atom_ids]
+            pivot = tuple(
+                sum(float(position[axis]) for position in xyz) / len(xyz)
+                for axis in range(3)
             )
+        else:
+            pivot = tuple(motor["pivot"])
 
-            motor_direction = "forward"
+        motor["resolved_pivot"] = pivot
+        print(
+            f"{motor_name}: rotation pivot = "
+            f"({pivot[0]:.6f}, {pivot[1]:.6f}, {pivot[2]:.6f}) A"
+        )
 
-            print("Motor1 moving +X")
 
-    elif command == "reverse":
+def configure_lammps_system(lmp, config):
+    """Initialize LAMMPS using explicit commands and configured file paths.
 
-        if motor_direction != "reverse":
+    File paths are passed directly to LAMMPS instead of relying on input-script
+    variable substitution. This avoids unresolved ${variable} placeholders
+    when the input file is loaded through the Python library interface.
+    """
+    files = config["resolved_files"]
+    network = config["network"]
+    imd = config["imd"]
 
+    # These commands must precede read_data. The physical MD timestep remains
+    # in simulation.in, where users normally expect to configure it.
+    lmp.command("units metal")
+    lmp.command(f"atom_style {config['lammps']['atom_style']}")
+    lmp.command("boundary s s s")
+
+    print("Reading LAMMPS data file:", files["data_file"], flush=True)
+    lmp.command(f"read_data {lammps_quote(files['data_file'].as_posix())}")
+
+    print("Reading SAMSON group definitions:", files["group_file"], flush=True)
+    lmp.command(f"include {lammps_quote(files['group_file'].as_posix())}")
+
+    print("Loading LAMMPS simulation settings:", files["simulation_file"], flush=True)
+    lmp.file(str(files["simulation_file"]))
+
+    # Keep the IMD endpoint in Python configuration so there is only one
+    # authoritative place to set the port and transfer rate.
+    lmp.command(
+        f"fix comm all imd {network['imd_port']} "
+        f"unwrap off fscale 100.0 trate {imd['transfer_rate']} nowait on"
+    )
+
+
+def motor_velocity_vector(motor_config, direction_sign=1.0):
+    """Return the configured unit axis multiplied by motor speed and sign."""
+    speed = motor_config["velocity"] * direction_sign
+    values = [component * speed for component in motor_config["axis"]]
+    return tuple(0.0 if abs(value) < 1e-14 else value for value in values)
+
+
+def process_motor_command(lmp, motor_config, command, motor_direction):
+    """Apply a linear or rotational command to one independently controlled motor."""
+    group = motor_config["group"]
+    fix_id = motor_config["fix_id"]
+    motion = motor_config["motion"]
+
+    if command in ("forward", "reverse"):
+        new_direction = command
+        if motor_direction != new_direction:
             if motor_direction is not None:
-                lmp.command("unfix motor1_move")
+                lmp.command(f"unfix {fix_id}")
 
-            lmp.command(
-                "fix motor1_move motor1 move linear -10.0 0.0 0.0"
-            )
+            sign = 1.0 if command == "forward" else -1.0
+            axis = tuple(component * sign for component in motor_config["axis"])
 
-            motor_direction = "reverse"
+            if motion == "linear":
+                speed = motor_config["velocity"]
+                vx, vy, vz = (component * speed for component in axis)
+                lmp.command(
+                    f"fix {fix_id} {group} move linear "
+                    f"{vx:.12g} {vy:.12g} {vz:.12g}"
+                )
+                print(
+                    f"{group} translating {command}: velocity "
+                    f"({vx:.6g}, {vy:.6g}, {vz:.6g})"
+                )
+            elif motion == "rotate":
+                px, py, pz = motor_config["resolved_pivot"]
+                rx, ry, rz = axis
+                period = motor_config["period"]
+                lmp.command(
+                    f"fix {fix_id} {group} move rotate "
+                    f"{px:.12g} {py:.12g} {pz:.12g} "
+                    f"{rx:.12g} {ry:.12g} {rz:.12g} "
+                    f"{period:.12g} units box"
+                )
+                print(
+                    f"{group} rotating {command}: pivot "
+                    f"({px:.6g}, {py:.6g}, {pz:.6g}), axis "
+                    f"({rx:.6g}, {ry:.6g}, {rz:.6g}), "
+                    f"period {period:g} time-units/revolution"
+                )
+            else:
+                raise ValueError(f"Unsupported motor motion type: {motion}")
 
-            print("Motor1 moving -X")
+            motor_direction = new_direction
 
     elif command == "stop":
-
         if motor_direction is not None:
-
-            lmp.command("unfix motor1_move")
-
+            lmp.command(f"unfix {fix_id}")
             motor_direction = None
-
-            print("Motor1 stopped")
+            print(f"{group} stopped")
 
     return motor_direction
 
 
-# ============================================================
-# FRAME PROCESSING
-# ============================================================
-
-def process_frames(
-    frame_queue,
-    molecule,
-    samson_client,
-    frame_count
-):
-    """
-    Process all available IMD frames.
-
-    Convert incoming coordinates into our IMDFrame structure,
-    update the molecular system, and forward coordinates
-    to SAMSON.
-    """
-
+def process_frames(frame_queue, molecule, samson_client, frame_count):
+    """Update the molecular state and forward all queued frames to SAMSON."""
     frames_processed = 0
 
-    while not frame_queue.empty():
+    while True:
+        try:
+            raw_frame = frame_queue.get_nowait()
+        except queue.Empty:
+            break
 
-        raw_frame = frame_queue.get()
-
-        positions = np.asarray(
-            raw_frame.positions,
-            dtype=np.float32
-        ).copy()
-
+        positions = np.asarray(raw_frame.positions, dtype=np.float32).copy()
         frame_count += 1
-
         frame_data = IMDFrame(
             frame_number=frame_count,
             timestamp=time.perf_counter(),
             atom_count=len(positions),
-            positions=positions
+            positions=positions,
         )
 
         molecule.update(frame_data)
-
         samson_client.send_frame(
             frame_number=frame_count,
-            positions=molecule.get_positions()
+            positions=molecule.get_positions(),
         )
-
         frames_processed += 1
 
     return frame_count, frames_processed
 
 
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
+def main(config_file=None):
+    config = load_config(config_file)
+    validate_configured_motor_groups(config)
+    files = config["resolved_files"]
+    network = config["network"]
+    simulation = config["simulation"]
+    motors = config["motors"]
+    controls = config["controls"]
 
     lmp = None
     samson_client = None
     keyboard = None
-
     receiver_thread = None
 
     stop_event = threading.Event()
     connected_event = threading.Event()
-
     frame_queue = queue.Queue()
 
-    motor_direction = None
+    motor_directions = {name: None for name in motors}
     frame_count = 0
 
     try:
-
-        # ----------------------------------------------------
-        # LOAD MOLECULAR MODEL
-        # ----------------------------------------------------
-
-        print("Creating LAMMPS instance...")
-
+        print("Loading molecular model:", files["data_file"])
         atom_table = load_lammps_data(
-            DATA_FILE,
-            element_map=ELEMENT_MAP
+            files["data_file"],
+            atom_style=config["lammps"]["atom_style"],
+            element_map=config["elements"]["overrides"],
         )
+        n_atoms = len(atom_table)
+        unknown_elements = sorted({
+            atom["element"] for atom in atom_table
+            if atom["element"] == "Unknown"
+        })
+        if unknown_elements:
+            print(
+                "Warning: some atom types could not be identified from mass. "
+                "Add explicit entries under [elements.overrides] in config.toml."
+            )
 
-        N_ATOMS = len(atom_table)
-
-        print(f"Loaded atom table: {N_ATOMS} atoms")
-
+        print(f"Loaded atom table: {n_atoms} atoms")
+        resolve_rotation_pivots(
+            motors,
+            atom_table,
+            files["group_file"],
+        )
         molecule = MolecularSystem(atom_table)
 
-        # ----------------------------------------------------
-        # CREATE LAMMPS INSTANCE
-        # ----------------------------------------------------
-
+        print("Creating LAMMPS instance...")
         lmp = lammps()
+        configure_lammps_system(lmp, config)
 
-        print("Loading simulation.in...")
-
-        lmp.file(SIMULATION_FILE)
-
-        print("Initializing LAMMPS...")
-
-        # Initialize LAMMPS and the IMD listener.
-        # This does not advance simulation time.
-
+        print("Initializing LAMMPS and IMD listener...")
         lmp.command("run 0")
 
-        # ----------------------------------------------------
-        # START IMD RECEIVER THREAD
-        # ----------------------------------------------------
-
         print("\nConnecting to LAMMPS IMD...")
-
         receiver_thread = threading.Thread(
             target=connect_and_receive_frames,
             args=(
                 frame_queue,
                 stop_event,
                 connected_event,
-                N_ATOMS
+                n_atoms,
+                network["host"],
+                network["imd_port"],
             ),
-            daemon=True
+            daemon=True,
         )
-
         receiver_thread.start()
 
-        print("IMD receiver thread launched.")
-
-        # ----------------------------------------------------
-        # CONNECT TO SAMSON
-        # ----------------------------------------------------
-
         print("\nConnecting to SAMSON...")
-
         samson_client = SamsonIMDClient(
-            host=HOST,
-            port=SAMSON_PORT
+            host=network["host"],
+            port=network["samson_port"],
         )
-
         samson_client.connect()
 
-        # ----------------------------------------------------
-        # START KEYBOARD CONTROLLER
-        # ----------------------------------------------------
-
-        keyboard = KeyboardController()
+        key_bindings = {controls["quit_key"]: "quit"}
+        for motor_name, motor in motors.items():
+            key_bindings[motor["forward_key"]] = f"{motor_name}:forward"
+            key_bindings[motor["stop_key"]] = f"{motor_name}:stop"
+            key_bindings[motor["reverse_key"]] = f"{motor_name}:reverse"
+        keyboard = KeyboardController(key_bindings=key_bindings)
         keyboard.start()
 
         print("\nSimulation controller started.")
-        print("J = Motor1 forward")
-        print("K = Motor1 stop")
-        print("L = Motor1 reverse")
-        print("Q = Quit")
-        print("\nRunning simulation...\n")
-
-        # ----------------------------------------------------
-        # MAIN SIMULATION LOOP
-        # ----------------------------------------------------
+        for motor_name, motor in motors.items():
+            axis_text = tuple(round(v, 4) for v in motor["axis"])
+            if motor["motion"] == "linear":
+                motion_text = f"linear axis={axis_text}, speed={motor['velocity']:g} Å/ps"
+            else:
+                pivot_text = tuple(round(v, 4) for v in motor["resolved_pivot"])
+                motion_text = (
+                    f"rotation axis={axis_text}, pivot={pivot_text}, "
+                    f"period={motor['period']:g} ps/revolution"
+                )
+            print(
+                f"{motor_name}: group={motor['group']}, {motion_text}; "
+                f"keys {motor['forward_key'].upper()}/{motor['stop_key'].upper()}/{motor['reverse_key'].upper()}"
+            )
+        print(f"Steps per Python update: {simulation['steps_per_update']}")
+        print("Running simulation...\n")
 
         running = True
-
         while running:
-
-            # -----------------------------------------------
-            # CHECK KEYBOARD COMMANDS
-            # -----------------------------------------------
-
-            commands = keyboard.get_commands()
-
-            for command in commands:
-
+            for command in keyboard.get_commands():
                 if command == "quit":
                     running = False
                     break
-
-                motor_direction = process_motor_command(
-                    lmp,
-                    command,
-                    motor_direction
+                motor_name, action = command.split(":", 1)
+                motor_directions[motor_name] = process_motor_command(
+                    lmp, motors[motor_name], action, motor_directions[motor_name]
                 )
 
             if not running:
                 break
 
-            # -----------------------------------------------
-            # ADVANCE LAMMPS SIMULATION
-            # -----------------------------------------------
-
-            lmp.command(f"run {CHUNK_STEPS}")
-
-            # -----------------------------------------------
-            # PROCESS RECEIVED IMD FRAMES
-            # -----------------------------------------------
+            lmp.command(f"run {simulation['steps_per_update']}")
 
             frame_count, frames_processed = process_frames(
-                frame_queue,
-                molecule,
-                samson_client,
-                frame_count
+                frame_queue, molecule, samson_client, frame_count
             )
-
-            # -----------------------------------------------
-            # DIAGNOSTICS
-            # -----------------------------------------------
-
-            if frames_processed > 0:
-
+            if frames_processed:
                 print(
                     f"Frames: {frame_count} | "
                     f"Received this cycle: {frames_processed} | "
-                    f"Atoms: {N_ATOMS}"
+                    f"Atoms: {n_atoms}"
                 )
-
-            # Give the receiver thread time to run.
             time.sleep(0.01)
 
     except KeyboardInterrupt:
-
         print("\nKeyboard interrupt received.")
 
     except Exception as error:
-
-        print("\nSimulation controller error:")
-        print(error)
+        print("\nSimulation controller error:", repr(error))
+        raise
 
     finally:
-
-        # ----------------------------------------------------
-        # SHUTDOWN
-        # ----------------------------------------------------
-
         print("\nShutting down...")
-
         stop_event.set()
 
         if keyboard is not None:
             keyboard.stop()
 
-        # Close LAMMPS first to shut down the IMD connection.
         if lmp is not None:
             try:
                 lmp.close()
@@ -399,10 +429,6 @@ def main():
 
         print("Controller stopped.")
 
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
 
 if __name__ == "__main__":
     main()

@@ -41,7 +41,11 @@ class MolecularSystem:
             index = atom["imd_index"]
 
             self.positions[index] = atom["initial_position"]
-            self.masses[index] = atom["mass"]
+            # A missing Masses entry is represented as zero here. Position
+            # streaming still works, but center-of-mass calculations will
+            # reject incomplete mass information rather than return a bad value.
+            mass = atom.get("mass")
+            self.masses[index] = float(mass) if mass is not None else 0.0
 
 
     def update(self, frame):
@@ -132,10 +136,13 @@ class MolecularSystem:
         Uses atomic masses and current positions.
         """
 
-        total_mass = np.sum(self.masses)
+        if np.any(self.masses <= 0):
+            raise ValueError(
+                "Cannot calculate center of mass: one or more atoms have no "
+                "positive mass in the LAMMPS data file."
+            )
 
-        if total_mass <= 0:
-            raise ValueError("Total molecular mass must be positive.")
+        total_mass = np.sum(self.masses)
 
         weighted_positions = (
             self.positions * self.masses[:, np.newaxis]

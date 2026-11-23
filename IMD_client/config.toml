@@ -1,0 +1,81 @@
+# Molecular Simulator application settings.
+# File paths are relative to this config.toml file.
+
+[files]
+data_file = "../three_parts.data"
+group_file = "../samson_groups.in"
+simulation_file = "../simulation.in"
+
+[network]
+host = "127.0.0.1"
+imd_port = 5678
+samson_port = 5679
+
+[simulation]
+# Number of LAMMPS MD steps advanced during each Python control-loop cycle.
+# This is NOT the molecular dynamics timestep.
+steps_per_update = 10
+
+[lammps]
+# Must match the atom style declared in the LAMMPS data file.
+atom_style = "molecular"
+
+[imd]
+# Send one coordinate update every N LAMMPS steps.
+transfer_rate = 10
+
+[controls]
+quit_key = "q"
+
+# Each motor needs its own SAMSON structural group and LAMMPS group.
+# Motor 1: J = +axis, K = stop, L = -axis. Example axis is +X.
+[motors.motor1]
+group = "motor1"
+fix_id = "motor1_move"
+velocity = 10.0
+axis = [1.0, 0.0, 0.0]
+forward_key = "j"
+stop_key = "k"
+reverse_key = "l"
+
+# Motor 2: F = +axis, G = stop, H = -axis. Example axis is +Y.
+# Create a SAMSON group named motor2 before enabling this entry.
+[motors.motor2]
+group = "motor2"
+fix_id = "motor2_move"
+velocity = 10.0
+axis = [0.0, 1.0, 0.0]
+forward_key = "f"
+stop_key = "g"
+reverse_key = "h"
+
+[samson]
+display_interval_ms = 16
+
+[elements.overrides]
+# Optional explicit element assignments by LAMMPS atom type.
+# Example:
+# "1" = "C"
+# "2" = "H"
+# If omitted, the application infers elements from the Masses section.
+
+[export]
+# Padding added around the current SAMSON coordinates when rebuilding the LAMMPS box.
+box_padding = 10.0
+
+
+# Optional third motor: rotational actuator.
+# Uncomment this section after creating/exporting a SAMSON structural group
+# named motor3. U = rotate in the positive right-hand direction, I = stop,
+# O = rotate in the opposite direction.
+#
+ [motors.motor3]
+ group = "motor3"
+ fix_id = "motor3_rotate"
+ motion = "rotate"
+ axis = [0.0, 0.0, 1.0]
+ period = 10.0
+ pivot = "group_centroid"  # or an explicit [x, y, z] in Angstroms
+ forward_key = "u"
+ stop_key = "i"
+ reverse_key = "o"
