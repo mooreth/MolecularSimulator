@@ -57,16 +57,9 @@ def load_config(config_file=None):
     config["resolved_files"] = paths
 
     network = config.setdefault("network", {})
-    network.setdefault("imd_host", "127.0.0.1")
-    network.setdefault("samson_host", "127.0.0.1")
+    network.setdefault("host", "127.0.0.1")
     network.setdefault("imd_port", 5678)
     network.setdefault("samson_port", 5679)
-    
-    for key in ("imd_host", "samson_host"):
-        network[key] = str(network[key]).strip()
-        if not network[key]:
-            raise ValueError(f"[network] {key} cannot be empty")
-    
     for key in ("imd_port", "samson_port"):
         port = int(network[key])
         if not 1 <= port <= 65535:

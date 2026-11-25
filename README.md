@@ -59,27 +59,50 @@ LAMMPS simulation
 IMDClient receiver thread
 ```
 
-The application uses two local TCP connections by default:
+The application supports both a single-machine setup and a split remote-compute setup.
 
-- **5678:** LAMMPS IMD stream received by the Python controller.
-- **5679:** Python-to-SAMSON coordinate updates.
+### Remote compute: Linux LAMMPS + Windows SAMSON
 
-Both default to `127.0.0.1`. Change the host and ports in `IMD_client/config.toml` if your deployment requires a different arrangement.
+The validated remote arrangement uses two computers:
+
+- **Linux compute node (Node3):** runs the MolecularSimulator Python controller and LAMMPS locally.
+- **Windows workstation:** runs SAMSON and the SAMSON-side `SAMSON_run.py` TCP receiver.
+
+```text
+Windows workstation                                  Linux compute node
+SAMSON + SAMSON_run.py                               main.py + Python LAMMPS
+TCP receiver: 0.0.0.0:5679  <--- coordinate frames ---  samson_host = Windows LAN IP
+                                                       LAMMPS fix imd :5678
+                         <--- local IMD stream -------  imd_host = 127.0.0.1
+```
+
+The two network settings have different roles:
+
+- `imd_host` is the address used by the controller's IMD receiver to connect to the LAMMPS IMD listener. When LAMMPS and the controller run on the same Linux node, use `127.0.0.1`.
+- `samson_host` is the address used by the controller to connect to the SAMSON receiver. On the Linux compute node, set this to the Windows workstation's reachable LAN IP address.
+- On the Windows SAMSON workstation, `samson_host` is the receiver bind address; use `0.0.0.0` to listen on the workstation's network interfaces.
+
+The default ports are **5678** for IMD and **5679** for the SAMSON coordinate stream. Permit inbound TCP port 5679 through the Windows firewall for the private network. Keep the IMD connection local to the Linux compute node unless you intentionally deploy LAMMPS and its controller on separate hosts.
+
+Use a separate machine-specific `config.toml` on each computer. Do not copy the Windows receiver's `samson_host = "0.0.0.0"` setting onto the Linux controller: the Linux controller must connect to the Windows workstation's actual LAN address. See [docs/INSTALLATION.md](docs/INSTALLATION.md) for example configurations and startup order.
+
+### Local single-machine setup
+
+For a local setup, the controller, LAMMPS, and SAMSON can use loopback networking. Configure the two host values for the local arrangement and keep the ports consistent with both endpoints.
 
 ## Requirements
 
 The tested development environment for Pass 2.4 was:
 
-- Windows 64-bit
-- Python 3.11
-- SAMSON 2026 R1
-- LAMMPS 22Jul2025, 64-bit, with its Python interface and required features
+- **Windows visualization workstation:** SAMSON 2026 R1 and its embedded Python/Qt environment.
+- **Linux remote compute node:** Ubuntu 22.04.4 LTS, Python 3.11, and LAMMPS 30 Sep 2026 Update 1 with its Python interface and required packages.
+- The remote setup uses a TCP connection from the Linux controller to the Windows SAMSON receiver.
 
 You will need:
 
 1. A working SAMSON installation with its Python console and Qt/PySide6 environment.
 2. LAMMPS built/installed with the Python module and shared library available to the Python interpreter that runs `main.py`.
-3. LAMMPS support for the **IMD** fix and **AIREBO** potential for the supplied example. AIREBO is part of the MANYBODY package; the IMD fix requires the IMD package.
+3. LAMMPS support for the **MOLECULE** package (for `atom_style molecular`), **IMD** fix/package, and **MANYBODY** package (for AIREBO) for the supplied remote example.
 4. Python 3.11 or later, NumPy, and IMDClient in the environment used to run `main.py`.
 5. The `CH.airebo` potential file available through LAMMPS's normal potential-file lookup or the configured working environment.
 
@@ -87,7 +110,7 @@ LAMMPS's command-line executable alone is not sufficient: this application impor
 
 ## Installation and first run
 
-See **[docs/INSTALLATION.md](docs/INSTALLATION.md)** for the full Windows-oriented setup and launch procedure.
+See **[docs/INSTALLATION.md](docs/INSTALLATION.md)** for local setup and the tested Linux-compute/Windows-SAMSON deployment procedure.
 
 Quick outline:
 
@@ -97,8 +120,8 @@ Quick outline:
 4. In the SAMSON Python console, execute `IMD_client/SAMSON_run.py`.
 5. Create the required SAMSON structural groups on the newly imported model (at least `motor1` and `motor2` with the default configuration).
 6. In the **same SAMSON Python session**, execute `SAMSON_groups_setup.py` from the repository root.
-7. From a Windows terminal, run `python main.py` with the working directory set to `IMD_client`.
-8. Focus the terminal window and use the configured keyboard controls.
+7. Start `main.py` on the machine running LAMMPS (Windows for a local setup, or Linux for remote compute).
+8. Focus that controller terminal and use the configured keyboard controls.
 
 **Important:** `SAMSON_groups_setup.py` rewrites both the configured LAMMPS data file and group file using the current SAMSON coordinates and group membership. Back up any data file you need to preserve before running the exporter.
 
@@ -167,7 +190,7 @@ Please read these before trying a system other than the supplied carbon example.
 - **Prescribed motion:** Motors use LAMMPS `fix move`; their motion is imposed rather than calculated from applied torque or forces.
 - **Group discipline matters:** Motor and anchor groups are excluded from `free` and therefore from the supplied integration/thermostat fixes. Do not assign the same atoms to multiple independently moving motors. Keep groups consistent with the physical mechanism being modeled.
 - **Example force field:** Users are responsible for selecting a physically appropriate force field, atom types, coefficients, units, and boundary conditions for any system they substitute.
-- **Platform scope:** Windows is the tested platform. Other operating systems may work but have not been validated for this release.
+- **Platform scope:** The local workflow was developed on Windows. The remote-compute workflow has also been exercised with Ubuntu 22.04 on Node3 running LAMMPS and the controller, and Windows running SAMSON. Other operating systems and deployment combinations have not been validated.
 
 ## Validation status
 
@@ -177,7 +200,7 @@ Pass 2.4 includes recorded automated checks for Python syntax, configuration par
 - `ROTATION_TEST_RESULTS.txt`
 - `PASS_2_4_NOTES.md`
 
-The project was also exercised in the developer's Windows/SAMSON/LAMMPS environment, including live multi-motor operation. The repository does not yet include a comprehensive automated regression-test suite, so contributors should treat the recorded checks as a starting point rather than a guarantee for every installation.
+The project was exercised in a Windows/SAMSON/LAMMPS environment and in a split-machine deployment: Ubuntu 22.04 Node3 ran LAMMPS 30 Sep 2026 Update 1 and the Python controller, while a Windows workstation ran SAMSON 2026 R1. The remote test loaded a 7,242-atom molecular system, established the local LAMMPS IMD connection and remote SAMSON TCP connection, and demonstrated live response to keyboard commands for three motor groups. This verifies basic remote operation; responsiveness and scaling still need performance characterization. The repository does not yet include a comprehensive automated regression-test suite, so contributors should treat the recorded checks as a starting point rather than a guarantee for every installation.
 
 ## Project roadmap
 

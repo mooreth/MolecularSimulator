@@ -19,12 +19,18 @@ simulation_file = "../simulation.in"
 
 ```toml
 [network]
-host = "127.0.0.1"
+imd_host = "127.0.0.1"
+samson_host = "192.168.68.63" # Example: Windows workstation LAN address
 imd_port = 5678
 samson_port = 5679
 ```
 
-The IMD port is the LAMMPS-to-Python stream. The SAMSON port is the Python-to-SAMSON coordinate stream. The host is used for the local TCP endpoints.
+The host settings are intentionally separate:
+
+- `imd_host`: address the controller uses to connect to the LAMMPS IMD listener. Use `127.0.0.1` when LAMMPS and the controller run on the same machine.
+- `samson_host`: address the controller uses to connect to the SAMSON receiver. On a remote Linux compute node, use the Windows workstation's LAN IP.
+
+On the Windows SAMSON workstation, the receiver binds to all interfaces with `samson_host = "0.0.0.0"`. On the Linux controller, `samson_host` must be the actual reachable Windows IP; `0.0.0.0` is a bind address, not a destination address. Use separate machine-specific configuration files.
 
 ## Simulation and IMD cadence
 
