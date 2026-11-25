@@ -331,7 +331,7 @@ def main(config_file=None):
                 stop_event,
                 connected_event,
                 n_atoms,
-                network["host"],
+                network["imd_host"],
                 network["imd_port"],
             ),
             daemon=True,
@@ -340,7 +340,7 @@ def main(config_file=None):
 
         print("\nConnecting to SAMSON...")
         samson_client = SamsonIMDClient(
-            host=network["host"],
+            host=network["samson_host"],
             port=network["samson_port"],
         )
         samson_client.connect()
