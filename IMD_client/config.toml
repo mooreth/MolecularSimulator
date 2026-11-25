@@ -2,12 +2,13 @@
 # File paths are relative to this config.toml file.
 
 [files]
-data_file = "../three_parts.data"
+data_file = "../gripper_block_pickup.data"
 group_file = "../samson_groups.in"
 simulation_file = "../simulation.in"
 
 [network]
-host = "127.0.0.1"
+samson_host = "0.0.0.0"
+imd_host = "127.0.0.1"
 imd_port = 5678
 samson_port = 5679
 

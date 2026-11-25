@@ -23,7 +23,7 @@ import samson_session
 
 CONFIG = load_config(SCRIPT_DIR / "config.toml")
 DATA_FILE = CONFIG["resolved_files"]["data_file"]
-SERVER_HOST = CONFIG["network"]["host"]
+SERVER_HOST = CONFIG["network"]["samson_host"]
 SERVER_PORT = CONFIG["network"]["samson_port"]
 DISPLAY_INTERVAL_MS = CONFIG["samson"]["display_interval_ms"]
 ELEMENT_OVERRIDES = CONFIG["elements"]["overrides"]
