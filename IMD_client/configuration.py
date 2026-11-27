@@ -126,9 +126,9 @@ def load_config(config_file=None):
         motor.setdefault("fix_id", f"{motor_name}_move")
         motor.setdefault("motion", "linear")
         motor["motion"] = str(motor["motion"]).lower()
-        if motor["motion"] not in {"linear", "rotate"}:
+        if motor["motion"] not in {"linear", "rotate", "force"}:
             raise ValueError(
-                f"[motors.{motor_name}] motion must be 'linear' or 'rotate'"
+                f"[motors.{motor_name}] motion must be 'linear', 'rotate', or 'force'"
             )
         # Defaults preserve the original J/K/L mapping for motor1. The
         # second motor defaults to F/G/H; further motors require explicit keys.
@@ -163,7 +163,7 @@ def load_config(config_file=None):
                 raise ValueError(
                     f"[motors.{motor_name}] velocity must be a finite value greater than zero"
                 )
-        else:
+        elif motor["motion"] == "rotate":
             if "period" not in motor:
                 raise ValueError(
                     f"[motors.{motor_name}] period is required for rotational motion"
@@ -196,6 +196,22 @@ def load_config(config_file=None):
             else:
                 raise ValueError(
                     f"[motors.{motor_name}] pivot must be 'group_centroid' or [x, y, z]"
+                )
+        else:
+            if "force" not in motor:
+                raise ValueError(
+                    f"[motors.{motor_name}] force is required for force-driven motion"
+                )
+            motor["force"] = float(motor["force"])
+            if not math.isfinite(motor["force"]) or motor["force"] <= 0:
+                raise ValueError(
+                    f"[motors.{motor_name}] force must be a finite value greater than zero, in nN"
+                )
+            motor.setdefault("force_units", "nN")
+            motor["force_units"] = str(motor["force_units"]).lower()
+            if motor["force_units"] != "nn":
+                raise ValueError(
+                    f"[motors.{motor_name}] force_units must be 'nN'; force is configured in nanonewtons"
                 )
 
         # Normalize the direction vector so speed/period semantics remain
