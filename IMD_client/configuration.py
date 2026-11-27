@@ -126,6 +126,11 @@ def load_config(config_file=None):
         motor.setdefault("fix_id", f"{motor_name}_move")
         motor.setdefault("motion", "linear")
         motor["motion"] = str(motor["motion"]).lower()
+        if "force" in motor and motor["motion"] != "force":
+            raise ValueError(
+                f"[motors.{motor_name}] defines force but motion is not 'force'; "
+                "set motion = 'force' to enable force-driven motion"
+            )
         if motor["motion"] not in {"linear", "rotate", "force"}:
             raise ValueError(
                 f"[motors.{motor_name}] motion must be 'linear', 'rotate', or 'force'"
