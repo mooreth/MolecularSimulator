@@ -65,18 +65,23 @@ display_interval_ms = 16
 box_padding = 10.0
 
 
-# Optional third motor: rotational actuator.
+# Optional third motor: force-driven actuator.
 # Uncomment this section after creating/exporting a SAMSON structural group
-# named motor3. U = rotate in the positive right-hand direction, I = stop,
-# O = rotate in the opposite direction.
+# named motor3. P = apply force along +axis, O = remove the applied force,
+# I = apply force along -axis.
 #
- [motors.motor3]
- group = "motor3"
- fix_id = "motor3_rotate"
- motion = "rotate"
- axis = [0.0, 0.0, 1.0]
- period = 10.0
- pivot = "group_centroid"  # or an explicit [x, y, z] in Angstroms
- forward_key = "u"
- stop_key = "i"
- reverse_key = "o"
+# Force is the TOTAL force applied to the entire group, in nanonewtons (nN).
+# The controller distributes this force evenly across the group's atoms.
+# Do not enter a per-atom force.
+#
+# In LAMMPS units metal, 1 nN = 0.6242 eV/Angstrom.
+[motors.motor3]
+group = "motor3"
+fix_id = "motor3_push"
+motion = "force"
+force = 0.1
+force_units = "nN"
+axis = [0.0, 1.0, 0.0]
+forward_key = "p"
+stop_key = "o"
+reverse_key = "i"
