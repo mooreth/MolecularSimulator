@@ -75,13 +75,14 @@ box_padding = 10.0
 # Do not enter a per-atom force.
 #
 # In LAMMPS units metal, 1 nN = 0.6242 eV/Angstrom.
-[motors.motor3]
-group = "motor3"
-fix_id = "motor3_push"
-motion = "force"
-force = 0.1
-force_units = "nN"
-axis = [0.0, 1.0, 0.0]
-forward_key = "p"
-stop_key = "o"
-reverse_key = "i"
+# [motors.motor3]
+# group = "motor3"
+# fix_id = "motor3_push"
+# motion = "force"
+# force = 0.1
+# force_units = "nN"
+# axis = [0.0, 1.0, 0.0]
+# forward_key = "p"
+# stop_key = "o"
+# reverse_key = "i"
+# 
