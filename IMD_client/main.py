@@ -16,6 +16,10 @@ from molecular_system import MolecularSystem
 from SAMSON_imd import SamsonIMDClient
 
 
+# LAMMPS units metal expresses force in eV/Angstrom.
+NANONEWTON_TO_EV_PER_ANGSTROM = 0.6242
+
+
 @dataclass
 class IMDFrame:
     frame_number: int
@@ -102,7 +106,7 @@ def _read_group_atom_ids(group_file, group_name):
                         f"Could not parse atom IDs for group {group_name!r} in {group_file}"
                     ) from error
                 if not atom_ids:
-                    raise ValueError(f"Rotation group {group_name!r} contains no atoms")
+                    raise ValueError(f"Motor group {group_name!r} contains no atoms")
                 return atom_ids
     raise ValueError(
         f"Could not find explicit atom-ID definition for group {group_name!r} in {group_file}"
@@ -140,6 +144,33 @@ def resolve_rotation_pivots(motors, atom_table, group_file):
         print(
             f"{motor_name}: rotation pivot = "
             f"({pivot[0]:.6f}, {pivot[1]:.6f}, {pivot[2]:.6f}) A"
+        )
+
+
+def resolve_force_motors(motors, atom_table, group_file):
+    """Convert each configured total group force into a per-atom LAMMPS force."""
+    known_atom_ids = {int(atom["lammps_id"]) for atom in atom_table}
+
+    for motor_name, motor in motors.items():
+        if motor["motion"] != "force":
+            continue
+
+        atom_ids = _read_group_atom_ids(group_file, motor["group"])
+        missing = [atom_id for atom_id in atom_ids if atom_id not in known_atom_ids]
+        if missing:
+            raise ValueError(
+                f"Force motor group {motor['group']!r} contains atom IDs not present "
+                f"in the data file: {missing[:10]}"
+            )
+
+        atom_count = len(atom_ids)
+        total_force = motor["force"] * NANONEWTON_TO_EV_PER_ANGSTROM
+        motor["group_atom_count"] = atom_count
+        motor["force_per_atom"] = total_force / atom_count
+
+        print(
+            f"{motor_name}: total group force={motor['force']:g} nN "
+            f"({total_force:.6g} eV/A), distributed across {atom_count} atoms"
         )
 
 
@@ -225,6 +256,23 @@ def process_motor_command(lmp, motor_config, command, motor_direction):
                     f"({px:.6g}, {py:.6g}, {pz:.6g}), axis "
                     f"({rx:.6g}, {ry:.6g}, {rz:.6g}), "
                     f"period {period:g} time-units/revolution"
+                )
+            elif motion == "force":
+                force_sign = sign
+                per_atom_force = motor_config["force_per_atom"]
+                fx, fy, fz = (
+                    component * per_atom_force * force_sign
+                    for component in motor_config["axis"]
+                )
+                lmp.command(
+                    f"fix {fix_id} {group} addforce "
+                    f"{fx:.12g} {fy:.12g} {fz:.12g}"
+                )
+                print(
+                    f"{group} applying {command} force: "
+                    f"{motor_config['force']:g} nN total across "
+                    f"{motor_config['group_atom_count']} atoms "
+                    f"(per-atom force {fx:.6g}, {fy:.6g}, {fz:.6g} eV/A)"
                 )
             else:
                 raise ValueError(f"Unsupported motor motion type: {motion}")
@@ -314,6 +362,11 @@ def main(config_file=None):
             atom_table,
             files["group_file"],
         )
+        resolve_force_motors(
+            motors,
+            atom_table,
+            files["group_file"],
+        )
         molecule = MolecularSystem(atom_table)
 
         print("Creating LAMMPS instance...")
@@ -358,11 +411,16 @@ def main(config_file=None):
             axis_text = tuple(round(v, 4) for v in motor["axis"])
             if motor["motion"] == "linear":
                 motion_text = f"linear axis={axis_text}, speed={motor['velocity']:g} Å/ps"
-            else:
+            elif motor["motion"] == "rotate":
                 pivot_text = tuple(round(v, 4) for v in motor["resolved_pivot"])
                 motion_text = (
                     f"rotation axis={axis_text}, pivot={pivot_text}, "
                     f"period={motor['period']:g} ps/revolution"
+                )
+            else:
+                motion_text = (
+                    f"force axis={axis_text}, total group force={motor['force']:g} nN "
+                    f"({motor['group_atom_count']} atoms)"
                 )
             print(
                 f"{motor_name}: group={motor['group']}, {motion_text}; "
